@@ -1,0 +1,39 @@
+#!/bin/bash
+exec 3>&1 # make stdout available as fd 3 for the result
+exec 1>&2 # redirect all output to stderr for logging
+
+json=$(mktemp /tmp/artifactory.XXXXXX)
+cat > $json <&0
+API_KEY=$(jq -r '.source.apikey' < $json)
+ARTIFACTORY_URL=$(jq -r '.source.url' < $json)
+BUILD_GIT=$(jq -r '.params."build-add-git"' < $json)
+BUILD_CUSTOM_NAME=$(jq -r '.params."build-name"' < $json)
+ARTIFACTORY_BUILD_NAME=${BUILD_CUSTOM_NAME:-BUILD_PIPELINE_NAME}
+BUILD_URL="${ATC_EXTERNAL_URL}/teams/${BUILD_TEAM_NAME}/pipelines/${BUILD_PIPELINE_NAME}/jobs/${BUILD_JOB_NAME}/builds/${BUILD_NAME}"
+UPLOAD_FOLDER=$(jq -r '.params.upload_folder' < $json)
+UPLOAD_PATH=$(jq -r '.params.upload_path' < $json)
+ARCHIVE_PREFIX=$(jq -r '.params.archive_prefix' < $json)
+
+echo "Starting CLI Upload"
+cd $1
+ls
+jfrog rt upload "$UPLOAD_FOLDER/*" $UPLOAD_PATH --url=$ARTIFACTORY_URL --apikey=$API_KEY --build-name=$ARTIFACTORY_BUILD_NAME --build-number=$BUILD_NAME
+if [[ ! -z "$BUILD_GIT" ]]
+then
+  COMMIT_HASH=$(cat $BUILD_GIT/.git/short_ref)
+  echo "Found git source with ref:$COMMIT_HASH"
+  ARCHIVE_NAME=${ARCHIVE_PREFIX-archive}-${COMMIT_HASH-untagged}.tar.gz
+  cd $UPLOAD_FOLDER
+  tar -cvz -f ../$ARCHIVE_NAME *
+  cd ..
+  jfrog rt upload "$ARCHIVE_NAME" $UPLOAD_PATH --url=$ARTIFACTORY_URL --apikey=$API_KEY --build-name=$ARTIFACTORY_BUILD_NAME --build-number=$BUILD_NAME
+  jfrog rt bag $ARTIFACTORY_BUILD_NAME $BUILD_NAME $BUILD_GIT
+fi
+jfrog rt bp $ARTIFACTORY_BUILD_NAME $BUILD_NAME --url=$ARTIFACTORY_URL --apikey=$API_KEY --build-url=$BUILD_URL
+
+version=V0.3
+jq -n --arg version "$version" '{
+  version: {
+    release: $version
+  }
+}' >&3
